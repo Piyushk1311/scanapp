@@ -1,0 +1,23 @@
+name: ScanPro
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "16.0"
+targets:
+  ScanPro:
+    type: application
+    platform: iOS
+    sources: [ScanPro]
+    info:
+      path: ScanPro/Info.plist
+      properties:
+        CFBundleDisplayName: ScanPro
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSCameraUsageDescription: ScanPro uses the camera to scan your documents.
+        UIFileSharingEnabled: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.ScanPro
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"

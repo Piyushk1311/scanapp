@@ -29,3 +29,9 @@ Change `bundleIdPrefix` / `PRODUCT_BUNDLE_IDENTIFIER` in `project.yml` before sh
 
 ## Ideas for next steps
 iCloud sync, manual crop adjustment, searchable (text-layer) PDFs, page reordering, passcode/Face ID lock, ID-card mode.
+
+## Web app (works on any iPhone/Android, no install or signing)
+`web/` is an installable PWA version of ScanPro: camera/gallery import, auto edge detection + manual crop,
+filters, OCR, PDF export (Save to Files / Share), and a 6‑digit PIN. Scans are encrypted on-device
+(AES‑GCM, key derived from the PIN with PBKDF2) and never leave the phone; all libraries are bundled (no CDN).
+Open the site, then Share → *Add to Home Screen*. Run locally with any static server, e.g. `npx serve web`.

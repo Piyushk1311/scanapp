@@ -1,4 +1,4 @@
-const CACHE = 'scanpro-v1';
+const CACHE = 'scanpro-v2';
 const SHELL = ['./', 'index.html', 'app.js', 'store.js', 'vision.js', 'style.css', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-180.png', 'lib/jspdf.umd.min.js'];
 

@@ -32,6 +32,6 @@ iCloud sync, manual crop adjustment, searchable (text-layer) PDFs, page reorderi
 
 ## Web app (works on any iPhone/Android, no install or signing)
 `web/` is an installable PWA version of ScanPro: camera/gallery import, auto edge detection + manual crop,
-filters, OCR, PDF export (Save to Files / Share), and a 6‑digit PIN. Scans are encrypted on-device
+filters, OCR, PDF download (no sharing), and a 6‑digit PIN. Scans live only in memory until you save; nothing is kept in the app unless you tick the option. Scans are encrypted on-device
 (AES‑GCM, key derived from the PIN with PBKDF2) and never leave the phone; all libraries are bundled (no CDN).
 Open the site, then Share → *Add to Home Screen*. Run locally with any static server, e.g. `npx serve web`.

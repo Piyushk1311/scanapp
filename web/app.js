@@ -152,8 +152,9 @@ function renderLibrary(query) {
     h('div', { class: 'content' }, search,
       items.length ? h('div', { class: 'list' }, items)
         : h('div', { class: 'empty' }, h('div', { class: 'big' }, '📄'),
-          h('h2', {}, docs.length ? 'No matches' : 'No scans yet'),
-          h('p', { class: 'muted' }, docs.length ? 'Try a different search.' : 'Tap Scan to capture your first document.'))),
+          h('h2', {}, docs.length ? 'No matches' : 'Ready to scan'),
+          h('p', { class: 'muted' }, docs.length ? 'Try a different search.'
+            : 'Scans are not stored in the app. When you finish, they are saved as a PDF on your device and cleared from memory.'))),
     h('button', { class: 'fab', onclick: () => scanSheet(null) }, '📷  Scan'));
 }
 
@@ -193,11 +194,16 @@ async function processFiles(files, target, pending) {
   } catch { toast('Could not load the scanner engine'); return; }
   for (const f of files) {
     try {
-      const src = await busy('Reading photo…', () => V.fileToCanvas(f));
+      const src = await busy('Reading photo…', () => V.fileToCanvas(f, 2000));
       const cropped = await cropStep(src);
+      src.width = src.height = 0; // release the big bitmap right away
       if (!cropped) continue;
       const final = await filterStep(cropped, { title: 'Filter', confirmLabel: 'Add page' });
-      if (final) pending.push(final);
+      // Keep only a compressed JPEG in memory (~100-300 KB) instead of a full-size bitmap (~16 MB).
+      // `final` may be the same canvas as `cropped` (Original filter), so encode before releasing either.
+      if (final) pending.push(await V.canvasToBlob(final, 0.8));
+      cropped.width = cropped.height = 0;
+      if (final) final.width = final.height = 0;
     } catch (e) { console.error(e); toast('Could not process that photo'); }
   }
   if (pending.length) review(target, pending);
@@ -279,36 +285,73 @@ function filterStep(base, { title, confirmLabel, onDelete }) {
   });
 }
 
-// Review pending pages, then save.
+// Finish screen. Pages live only in memory (compressed JPEG blobs) until the user saves.
+const defaultName = () => 'Scan ' + new Date().toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+
+function discard(pending) { pending.length = 0; }
+
 function review(target, pending) {
-  const thumbs = pending.map((c, i) => {
-    const t = document.createElement('canvas');
-    const s = 240 / Math.max(c.width, c.height);
-    t.width = Math.round(c.width * s); t.height = Math.round(c.height * s);
-    t.getContext('2d').drawImage(c, 0, 0, t.width, t.height);
-    return h('div', { class: 'pg' }, t, h('span', { class: 'num' }, i + 1),
-      h('button', { class: 'x', 'aria-label': 'Remove page', onclick: () => { pending.splice(i, 1); pending.length ? review(target, pending) : (target ? showDoc(target.id) : showLibrary()); } }, '✕'));
-  });
+  const name = target ? null : h('input', { class: 'search', value: defaultName(), 'aria-label': 'File name', maxlength: 80 });
+  const keep = h('input', { type: 'checkbox', id: 'keep' });
+  const back = () => (target ? showDoc(target.id) : showLibrary());
+  const kb = Math.round(pending.reduce((n, b) => n + b.size, 0) / 1024);
+
+  const thumbs = pending.map((blob, i) => h('div', { class: 'pg' },
+    h('img', { src: objUrl(blob), alt: `Page ${i + 1}` }), h('span', { class: 'num' }, i + 1),
+    h('button', { class: 'x', 'aria-label': 'Remove page', onclick: () => { pending.splice(i, 1); pending.length ? review(target, pending) : back(); } }, '✕')));
+
   mount(
-    h('header', { class: 'bar' }, h('button', { class: 'ghost', onclick: () => confirm('Discard these scans?') && (target ? showDoc(target.id) : showLibrary()) }, 'Discard'),
+    h('header', { class: 'bar' },
+      h('button', { class: 'ghost', onclick: () => { if (confirm('Discard these scans? They have not been saved.')) { discard(pending); back(); } } }, 'Discard'),
       h('h1', {}, `${pending.length} page${pending.length === 1 ? '' : 's'}`), h('span')),
-    h('div', { class: 'content' }, h('div', { class: 'grid' }, thumbs)),
+    h('div', { class: 'content' },
+      name,
+      h('p', { class: 'muted small' }, `Held in memory only (~${kb > 1024 ? (kb / 1024).toFixed(1) + ' MB' : kb + ' KB'}). Nothing is stored in the app unless you choose to.`),
+      h('div', { class: 'grid' }, thumbs),
+      target ? null : h('label', { class: 'keep', for: 'keep' }, keep, h('span', {}, 'Also keep an encrypted copy in this app')),
+    ),
     h('footer', { class: 'actions row' },
-      h('button', { class: 'grow', onclick: () => scanSheet(target, pending) }, '＋ Add page'),
-      h('button', { class: 'primary grow', onclick: () => save(target, pending) }, 'Save')));
+      h('button', { class: 'grow', onclick: () => scanSheet(target, pending) }, '＋ Page'),
+      h('button', { class: 'grow', onclick: () => ocrBlobs(pending) }, 'Aa Text'),
+      target
+        ? h('button', { class: 'primary grow', onclick: () => addToDoc(target, pending) }, 'Add to document')
+        : h('button', { class: 'primary grow', onclick: () => finish(name.value, pending, keep.checked) }, '⤓ Save PDF')));
 }
 
-async function save(target, pending) {
-  const meta = await busy('Encrypting & saving…', async () => {
-    const ids = [];
-    for (const c of pending) ids.push(await S.addPage(await V.canvasToBlob(c)));
-    const m = target ? { ...target, pages: [...target.pages, ...ids], ocr: null }
-      : { id: crypto.randomUUID(), name: 'Scan ' + new Date().toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }), created: Date.now(), pages: ids, ocr: null };
-    await S.saveDoc(m);
-    return m;
-  });
+async function finish(rawName, pending, keepCopy) {
+  const title = rawName.trim() || defaultName();
+  try {
+    const pdf = await busy('Building PDF…', (setMsg) => buildPDF(pending, title, setMsg));
+    download(pdf, safeName(title) + '.pdf');
+    if (keepCopy) await busy('Encrypting copy…', () => persist(null, pending, title));
+  } catch (e) { console.error(e); toast('Could not create the PDF'); return; }
+  discard(pending); // free the memory
   docs = await S.listDocs();
-  toast('Saved');
+  showSaved(title, keepCopy);
+}
+
+function showSaved(title, kept) {
+  mount(h('section', { class: 'lock' },
+    h('div', { class: 'logo' }, '✓'), h('h1', {}, 'PDF saved'),
+    h('p', { class: 'muted' }, `“${safeName(title)}.pdf” was sent to your device’s downloads. On iPhone: Files → Downloads. On Android: Downloads.`),
+    h('p', { class: 'muted small' }, kept ? 'An encrypted copy is also kept in this app.' : 'No copy is kept in the app, and the scan has been cleared from memory.'),
+    h('button', { class: 'primary wide', onclick: showLibrary }, 'Done')));
+}
+
+/** Writes pending JPEG blobs (encrypted) to a new or existing document. */
+async function persist(target, pending, name) {
+  const ids = [];
+  for (const blob of pending) ids.push(await S.addPage(blob));
+  const m = target ? { ...target, pages: [...target.pages, ...ids], ocr: null }
+    : { id: crypto.randomUUID(), name: name || defaultName(), created: Date.now(), pages: ids, ocr: null };
+  await S.saveDoc(m);
+  return m;
+}
+
+async function addToDoc(target, pending) {
+  const meta = await busy('Encrypting & saving…', () => persist(target, pending));
+  discard(pending);
+  toast('Added');
   showDoc(meta.id);
 }
 
@@ -377,29 +420,46 @@ async function editPage(d, i) {
 
 // ---- OCR text -------------------------------------------------------------
 
-async function textView(d) {
-  let text = d.ocr;
-  if (text == null) {
-    text = await busy('Reading text…', async (setMsg) => {
-      const canvases = [];
-      for (const pid of d.pages) canvases.push(await V.fileToCanvas(await S.getPage(pid), 2600));
-      const t = await V.ocr(canvases, (i, n) => setMsg(`Reading page ${i} of ${n}…`));
-      await S.saveDoc({ ...d, ocr: t });
-      return t;
-    }).catch((e) => { console.error(e); toast('Text recognition failed'); return null; });
-    if (text == null) return;
-  }
+async function recognize(blobs) {
+  return busy('Reading text…', async (setMsg) => {
+    const canvases = [];
+    for (const blob of blobs) canvases.push(await V.fileToCanvas(blob, 2600));
+    try { return await V.ocr(canvases, (i, n) => setMsg(`Reading page ${i} of ${n}…`)); }
+    finally { canvases.forEach((c) => { c.width = c.height = 0; }); }
+  }).catch((e) => { console.error(e); toast('Text recognition failed'); return null; });
+}
+
+function showText(text, title, onClose) {
   const close = sheet([
     h('h2', {}, 'Scanned text'),
     h('pre', { class: 'text' }, text || 'No text found.'),
     h('div', { class: 'row' },
-      h('button', { class: 'grow', onclick: async () => { await navigator.clipboard?.writeText(text); toast('Copied'); } }, 'Copy'),
-      h('button', { class: 'grow', onclick: () => download(new Blob([text], { type: 'text/plain' }), safeName(d.name) + '.txt') }, 'Save .txt'),
-      h('button', { class: 'grow ghost', onclick: () => { close(); showDoc(d.id); } }, 'Close')),
+      h('button', { class: 'grow', onclick: async () => { try { await navigator.clipboard.writeText(text); toast('Copied'); } catch { toast('Copy not allowed'); } } }, 'Copy'),
+      h('button', { class: 'grow', onclick: () => download(new Blob([text], { type: 'text/plain' }), safeName(title) + '.txt') }, 'Save .txt'),
+      h('button', { class: 'grow ghost', onclick: () => { close(); onClose?.(); } }, 'Close')),
   ]);
 }
 
-// ---- PDF export -----------------------------------------------------------
+// Text for pages that exist only in memory (nothing is stored).
+async function ocrBlobs(pending) {
+  const text = await recognize(pending);
+  if (text != null) showText(text, 'scan-text');
+}
+
+// Text for a kept (stored) document; cached inside the encrypted record.
+async function textView(d) {
+  let text = d.ocr;
+  if (text == null) {
+    const blobs = [];
+    for (const pid of d.pages) blobs.push(await S.getPage(pid));
+    text = await recognize(blobs);
+    if (text == null) return;
+    await S.saveDoc({ ...d, ocr: text });
+  }
+  showText(text, d.name, () => showDoc(d.id));
+}
+
+// ---- PDF export (download only; no sharing) -------------------------------
 
 const safeName = (n) => n.replace(/[\\/:*?"<>|,]+/g, '-').trim() || 'scan';
 
@@ -411,13 +471,13 @@ function download(blob, name) {
 
 const blobToDataURL = (b) => new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(b); });
 
-async function buildPDF(d, setMsg) {
+/** Builds a PDF from JPEG blobs, one page per image, and returns it as a Blob. */
+async function buildPDF(blobs, title, setMsg) {
   const { jsPDF } = window.jspdf;
   let pdf = null;
-  for (let i = 0; i < d.pages.length; i++) {
-    setMsg?.(`Building PDF… ${i + 1}/${d.pages.length}`);
-    const blob = await S.getPage(d.pages[i]);
-    const data = await blobToDataURL(blob);
+  for (let i = 0; i < blobs.length; i++) {
+    setMsg?.(`Building PDF… ${i + 1}/${blobs.length}`);
+    const data = await blobToDataURL(blobs[i]);
     const dim = await new Promise((res) => { const im = new Image(); im.onload = () => res([im.naturalWidth, im.naturalHeight]); im.src = data; });
     const w = 595, hgt = Math.round(595 * dim[1] / dim[0]);
     if (!pdf) pdf = new jsPDF({ unit: 'pt', format: [w, hgt], orientation: hgt >= w ? 'p' : 'l', compress: true });
@@ -425,33 +485,20 @@ async function buildPDF(d, setMsg) {
     pdf.addImage(data, 'JPEG', 0, 0, w, hgt, undefined, 'FAST');
     await nextPaint();
   }
-  pdf.setProperties({ title: d.name, creator: 'ScanPro' });
+  pdf.setProperties({ title, creator: 'ScanPro' });
   return pdf.output('blob');
 }
 
+// Kept documents: export a PDF to the device's downloads.
 async function exportView(d) {
-  const blob = await busy('Building PDF…', (setMsg) => buildPDF(d, setMsg)).catch((e) => { console.error(e); toast('PDF failed'); return null; });
+  const blob = await busy('Building PDF…', async (setMsg) => {
+    const blobs = [];
+    for (const pid of d.pages) blobs.push(await S.getPage(pid));
+    return buildPDF(blobs, d.name, setMsg);
+  }).catch((e) => { console.error(e); toast('PDF failed'); return null; });
   if (!blob) return;
-  const name = safeName(d.name) + '.pdf';
-  const file = new File([blob], name, { type: 'application/pdf' });
-  const canShare = !!(navigator.canShare && navigator.canShare({ files: [file] }));
-  const kb = Math.max(1, Math.round(blob.size / 1024));
-
-  const close = sheet([
-    h('h2', {}, 'Export PDF'),
-    h('p', { class: 'muted' }, `${name} · ${d.pages.length} page${d.pages.length === 1 ? '' : 's'} · ${kb > 1024 ? (kb / 1024).toFixed(1) + ' MB' : kb + ' KB'}`),
-    canShare ? h('button', {
-      class: 'primary wide', onclick: async () => {
-        try { await navigator.share({ files: [file], title: d.name }); }
-        catch (e) { if (e.name !== 'AbortError') { toast('Share failed, downloading instead'); download(blob, name); } }
-      },
-    }, '📁  Save to Files / Share') : null,
-    h('button', { class: canShare ? 'wide' : 'primary wide', onclick: () => { download(blob, name); toast('Downloading…'); } }, '⤓  Download PDF'),
-    h('p', { class: 'muted small' }, canShare
-      ? 'On iPhone choose “Save to Files”. On Android pick Drive, Files or any app.'
-      : 'Your browser saves the PDF to its Downloads folder.'),
-    h('button', { class: 'ghost wide', onclick: () => close() }, 'Close'),
-  ]);
+  download(blob, safeName(d.name) + '.pdf');
+  toast('PDF saved to your downloads');
 }
 
 // ---- boot / auto-lock -----------------------------------------------------
